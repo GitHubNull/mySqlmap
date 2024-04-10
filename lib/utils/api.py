@@ -82,6 +82,7 @@ MAX_TASKS_NUMBER = multiprocessing.cpu_count() - 1
 ROOT_DIRECTORY = os.getcwd()
 datetime_format = "%Y-%m-%d %H:%M:%S"
 
+
 class DataStore(object):
     admin_token = ""
     current_db = None
@@ -331,8 +332,8 @@ class LogRecorder(logging.StreamHandler):
         Record emitted events to IPC database for asynchronous I/O
         communication with the parent process
         """
-        conf.databaseCursor.execute("INSERT INTO logs VALUES(NULL, ?, ?, ?, ?)", (conf.taskid, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), 
-            record.levelname, record.msg % record.args if record.args else record.msg))
+        conf.databaseCursor.execute("INSERT INTO logs VALUES(NULL, ?, ?, ?, ?)", (conf.taskid, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                                                                                  record.levelname, record.msg % record.args if record.args else record.msg))
 
 
 def setRestAPILog():
@@ -358,7 +359,7 @@ def is_admin(token):
 def perform_task(num_cores=None):
     # logger.debug('perform_task...')
     global MAX_TASKS_NUMBER
-    
+
     local_max_tasks_number = MAX_TASKS_NUMBER if num_cores is None or num_cores == 0 else num_cores
 
     # 计算在扫描的任务的数量
@@ -469,6 +470,8 @@ def security_headers(json_header=True):
     # response.content_type = "text/html; charset=utf-8"
 
 # 处理 OPTIONS 请求
+
+
 @route('/<path:path>', method=['OPTIONS'])
 def options_handler(path):
     return
@@ -531,8 +534,7 @@ def server_static(path):
         response.content_type = "image/x-icon"
     elif path.endswith(".svg"):
         response.content_type = "image/svg+xml"
-        
-    
+
     return static_file(path, root=f'{ROOT_DIRECTORY}/lib/utils/api/dist/assets')
 
 
@@ -638,6 +640,13 @@ def task_ls(token=None):
     """
     Pull task list
     """
+    task_status = {
+        TaskStatus.New.value: 0,
+        TaskStatus.Runnable.value: 0,
+        TaskStatus.Running.value: 0,
+        TaskStatus.Blocked.value: 0,
+        TaskStatus.Terminated.value: 0
+    }
     tasks = []
     index = 0
     with DataStore.tasks_lock:
@@ -679,11 +688,12 @@ def task_ls(token=None):
                     "status": status,
                     "injected": data_count > 0
                 }
+                task_status[status] += 1
                 tasks.append(resul_task_item)
 
         logger.debug("(%s) ls task pool (%s)" %
-                    (token, "admin" if is_admin(token) else request.remote_addr))
-        return jsonize({"success": True, "tasks": tasks, "tasks_num": len(tasks)})
+                     (token, "admin" if is_admin(token) else request.remote_addr))
+        return jsonize({"success": True, "tasks": tasks, "tasks_num": len(tasks), "task_status": task_status})
 
 
 @get("/admin/flush")
@@ -702,7 +712,7 @@ def task_flush(token=None):
                 del DataStore.tasks[key]
 
         logger.debug("(%s) Flushed task pool (%s)" %
-                    (token, "admin" if is_admin(token) else request.remote_addr))
+                     (token, "admin" if is_admin(token) else request.remote_addr))
         return jsonize({"success": True})
 
 ##################################
@@ -807,7 +817,7 @@ def scan_start(taskid):
             DataStore.tasks[taskid].status = TaskStatus.Runnable
             logger.debug("[%s] Unblocked" % taskid)
             return jsonize({"success": True, "engineid": 0})
-        
+
         for option, value in request.json.items():
             DataStore.tasks[taskid].set_option(option, value)
 
@@ -817,6 +827,7 @@ def scan_start(taskid):
         logger.debug("Add [%s] to scan list" % taskid)
         return jsonize({"success": True, "engineid": 0})
 
+
 @post('/scan/start_at_datetime/<taskid>')
 def scan_start_at_datetime(taskid):
     """
@@ -825,67 +836,72 @@ def scan_start_at_datetime(taskid):
 
     with DataStore.tasks_lock:
         if taskid not in DataStore.tasks:
-            logger.warning("[%s] Invalid task ID provided to scan_start()" % taskid)
+            logger.warning(
+                "[%s] Invalid task ID provided to scan_start()" % taskid)
             return jsonize({"success": False, "message": "Invalid task ID"})
-        
 
     if request.json is None:
         return jsonize({"success": False, "message": "Invalid request"})
-    
+
     params = request.params
-    
+
     if 'start_datetime' not in params:
         return jsonize({"success": False, "message": "Invalid start_datetime"})
-    
+
     start_datetime = params['start_datetime']
-    
+
     if not isinstance(start_datetime, str):
         return jsonize({"success": False, "message": "Invalid start_datetime"})
-    
+
     for key in request.json:
         if key in RESTAPI_UNSUPPORTED_OPTIONS:
             logger.warning(
                 "[%s] Unsupported option '%s' provided to scan_start()" % (taskid, key))
             return jsonize({"success": False, "message": "Unsupported option '%s'" % key})
-        
+
     with DataStore.tasks_lock:
         if DataStore.tasks[taskid].status == TaskStatus.Blocked:
             DataStore.tasks[taskid].status = TaskStatus.Runnable
             logger.debug("(%s) Unblocked" % taskid)
             return jsonize({"success": True, "engineid": 0})
-        
+
         for option, value in request.json.items():
             DataStore.tasks[taskid].set_option(option, value)
 
         # Launch sqlmap engine in a separate process
         DataStore.tasks[taskid].status = TaskStatus.Runnable
-        
-        DataStore.tasks[taskid].start_datetime = datetime.datetime.strptime(start_datetime, datetime_format)
+
+        DataStore.tasks[taskid].start_datetime = datetime.datetime.strptime(
+            start_datetime, datetime_format)
 
         logger.debug("Add (%s) to scan list" % taskid)
-        return jsonize({"success": True, "engineid": 0})        
-        
+        return jsonize({"success": True, "engineid": 0})
+
+
 @post('/scan/update_start_datetime/<taskid>')
 def scan_update_start_datetime(taskid):
     """
     Update the start datetime of a scan
     """
-    
+
     logger.debug("[%s] Updating start datetime" % taskid)
 
     with DataStore.tasks_lock:
         if taskid not in DataStore.tasks:
-            logger.warning("[%s] Invalid task ID provided to scan_update_start_datetime()" % taskid)
+            logger.warning(
+                "[%s] Invalid task ID provided to scan_update_start_datetime()" % taskid)
             return jsonize({"success": False, "message": "Invalid task ID"})
 
         start_datetime = request.json.get("start_datetime", None)
         if start_datetime is None:
-            logger.warning("[%s] No start_datetime provided to scan_update_start_datetime()" % taskid)
+            logger.warning(
+                "[%s] No start_datetime provided to scan_update_start_datetime()" % taskid)
             return jsonize({"success": False, "message": "Invalid start datetime"})
-        
+
         now = datetime.datetime.now()
         time_five_seconds_later = now + datetime.timedelta(seconds=5)
-        start_datetime = datetime.datetime.strptime(start_datetime, datetime_format)
+        start_datetime = datetime.datetime.strptime(
+            start_datetime, datetime_format)
         if DataStore.tasks[taskid].start_datetime is None:
             if start_datetime > time_five_seconds_later:
                 DataStore.tasks[taskid].start_datetime = start_datetime
@@ -923,8 +939,8 @@ def scan_update_start_datetime(taskid):
                     return jsonize({"success": False, "message": "Invalid start datetime"})
             else:
                 return jsonize({"success": False, "message": "Invalid task status"})
-        
-        
+
+
 @get('/scan/startBlocked/<taskid>')
 def scan_startBlocked(taskid):
     """
@@ -933,7 +949,8 @@ def scan_startBlocked(taskid):
 
     with DataStore.tasks_lock:
         if taskid not in DataStore.tasks:
-            logger.warning("[%s] Invalid task ID provided to scan_start()" % taskid)
+            logger.warning(
+                "[%s] Invalid task ID provided to scan_start()" % taskid)
             return jsonize({"success": False, "message": "Invalid task ID"})
 
         if DataStore.tasks[taskid].status == TaskStatus.Blocked:
@@ -954,7 +971,8 @@ def scan_stop(taskid):
 
     with DataStore.tasks_lock:
         if taskid not in DataStore.tasks:
-            logger.warning("[%s] Invalid task ID provided to scan_stop()" % taskid)
+            logger.warning(
+                "[%s] Invalid task ID provided to scan_stop()" % taskid)
             return jsonize({"success": False, "message": "Invalid task ID"})
         if DataStore.tasks[taskid].status == TaskStatus.Running:
             DataStore.tasks[taskid].engine_stop()
@@ -972,6 +990,7 @@ def scan_stop(taskid):
             logger.warning("[%s] task had terminaled!" % taskid)
             return jsonize({"success": False, "message": "Task had terminaled!"})
 
+
 @get("/scan/kill/<taskid>")
 def scan_kill(taskid):
     """
@@ -980,7 +999,8 @@ def scan_kill(taskid):
 
     with DataStore.tasks_lock:
         if taskid not in DataStore.tasks:
-            logger.warning("[%s] Invalid task ID provided to scan_kill()" % taskid)
+            logger.warning(
+                "[%s] Invalid task ID provided to scan_kill()" % taskid)
             return jsonize({"success": False, "message": "Invalid task ID"})
         if DataStore.tasks[taskid].status == TaskStatus.Running:
             DataStore.tasks[taskid].engine_kill()
